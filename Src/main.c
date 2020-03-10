@@ -23,14 +23,19 @@
 #include "cmsis_os.h"
 #include "fatfs.h"
 #include "libjpeg.h"
-#include "ltdc.h"
+#include "usb_host.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
 #include <stdlib.h>
 #include "MT48LC4M32B2.h"
+#include "ltdc.h"
 
+#include "usbh_video.h"
+#include "usbh_video_desc_parsing.h"
+#include "usbh_video_stream_parsing.h"
+#include "mjpeg_decoding.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -40,6 +45,8 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define UVC_FRAMEBUFFER0        (LCD_FRAME_BUFFER1 + LCD_BUFFER_SIZE)
+#define UVC_FRAMEBUFFER1        (UVC_FRAMEBUFFER0 + UVC_MAX_FRAME_SIZE)
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -49,15 +56,30 @@
 
 /* Private variables ---------------------------------------------------------*/
 
+DMA2D_HandleTypeDef hdma2d;
 LTDC_HandleTypeDef hltdc;
 RNG_HandleTypeDef hrng;
-HCD_HandleTypeDef hhcd_USB_OTG_HS;
+TIM_HandleTypeDef htim9;
 SDRAM_HandleTypeDef hsdram1;
 osThreadId defaultTaskHandle;
-SDRAM_HandleTypeDef hsdram1;
 
 /* USER CODE BEGIN PV */
 #define LCD_FRAME_BUFFER          SDRAM_DEVICE_ADDR
+
+uint32_t frame_cnt = 0;//Drawn frames counter
+uint32_t prev_frame_cnt = 0;
+
+uint32_t timestamp_1sec = 0;
+uint8_t last_fps = 0;
+
+uint8_t frame_received_flag = 0;
+
+extern uint32_t uvc_frame_cnt;
+extern uint8_t uvc_parsing_new_frame_ready;
+extern uint8_t* uvc_ready_framebuffer_ptr;
+extern uint32_t uvc_ready_frame_length;
+extern USBH_VIDEO_TargetFormat_t USBH_VIDEO_Target_Format;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -66,19 +88,23 @@ static void MPU_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_LTDC_Init(void);
 static void MX_RNG_Init(void);
+static void MX_DMA2D_Init(void);
 static void MX_FMC_Init(void);
-static void MX_USB_OTG_HS_HCD_Init(void);
+static void MX_TIM9_Init(void);
+void StartDefaultTask(void const * argument);
 
 /* USER CODE BEGIN PFP */
-
-void StartDefaultTask(void const * argument);
 void MT48LC4M32B2_Init();
+
 void TFT_FillScreen_565();
 void TFT_FillScreen();
 void TFT_DrawPixel();
 void TFT_FillRectangle();
 void TFT_DrawLine();
 
+void MX_USB_HOST_Process();
+
+volatile uint32_t decode_time = 0;//debug only
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -126,13 +152,19 @@ int main(void)
   MX_LTDC_Init();
   MX_RNG_Init();
   MX_FATFS_Init();
+  MX_DMA2D_Init();
   MX_FMC_Init();
-  MX_USB_OTG_HS_HCD_Init();
+  MX_TIM9_Init();
   MX_LIBJPEG_Init();
   /* USER CODE BEGIN 2 */
 
   MT48LC4M32B2_Init(&hsdram1);
   HAL_LTDC_SetAddress(&hltdc, LCD_FRAME_BUFFER,0);
+
+  video_stream_init_buffers((uint8_t*)UVC_FRAMEBUFFER0, (uint8_t*)UVC_FRAMEBUFFER1);
+  lcd_switch_to_single_buffer_mode();
+  lcd_clear(LCD_COLOR_WHITE);
+  printf("Waiting for UVC Camera\n");
 
   /* USER CODE END 2 */
 
@@ -162,13 +194,64 @@ int main(void)
   /* USER CODE END RTOS_THREADS */
 
   /* Start scheduler */
-  osKernelStart();
+
+//osKernelStart();
  
   /* We should never get here as control is now taken by the scheduler */
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+	  MX_USB_HOST_Process();
+
+	      if (uvc_parsing_new_frame_ready)
+	      {
+	        uvc_parsing_new_frame_ready = 0;
+
+	        if (frame_received_flag == 0)
+	        {
+	          //First frame from camera - switch to LCD dual buffer mode
+	          frame_received_flag = 1;
+	          HAL_Delay(1000);
+
+	          lcd_clear(LCD_COLOR_WHITE);//clear buffer0
+	          lcd_switch_buffer();
+	          lcd_switch_buffer();//make shadow buffer = buffer1
+	          lcd_clear(LCD_COLOR_WHITE);//clear buffer1
+	        }
+
+	        uint32_t start_decode_time = HAL_GetTick();
+	        //Draw captured image
+	        if (USBH_VIDEO_Target_Format == USBH_VIDEO_YUY2)
+	        {
+	          lcd_draw_yuyv_picture((uint8_t*)uvc_ready_framebuffer_ptr);
+	        }
+	        else
+	        {
+	          mjpeg_decompression_and_draw((uint8_t*)uvc_ready_framebuffer_ptr, uvc_ready_frame_length);
+	        }
+	        decode_time = HAL_GetTick() - start_decode_time;//debug only
+
+	        //Draw FPS
+	        uint8_t tmp_str[32];
+	        sprintf((char*)tmp_str, "FPS: %d   \n", last_fps);
+	        LCD_DisplayStringLine(LCD_PIXEL_HEIGHT - 20, tmp_str);
+
+	        lcd_switch_buffer();
+
+	        video_stream_ready_update();
+	        frame_cnt++;
+	        HAL_GPIO_TogglePin(GPIOI, GPIO_PIN_6);//Blink LED
+	      }
+
+	      //Calculate FPS
+	      if ((HAL_GetTick() - timestamp_1sec) > 1000)// 1000ms
+	      {
+	        timestamp_1sec = HAL_GetTick();
+	        last_fps = frame_cnt - prev_frame_cnt;
+	        prev_frame_cnt = frame_cnt;
+	      }
+
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -238,6 +321,43 @@ void SystemClock_Config(void)
 }
 
 /**
+  * @brief DMA2D Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_DMA2D_Init(void)
+{
+
+  /* USER CODE BEGIN DMA2D_Init 0 */
+
+  /* USER CODE END DMA2D_Init 0 */
+
+  /* USER CODE BEGIN DMA2D_Init 1 */
+
+  /* USER CODE END DMA2D_Init 1 */
+  hdma2d.Instance = DMA2D;
+  hdma2d.Init.Mode = DMA2D_M2M;
+  hdma2d.Init.ColorMode = DMA2D_OUTPUT_RGB565;
+  hdma2d.Init.OutputOffset = 0;
+  hdma2d.LayerCfg[1].InputOffset = 0;
+  hdma2d.LayerCfg[1].InputColorMode = DMA2D_INPUT_RGB565;
+  hdma2d.LayerCfg[1].AlphaMode = DMA2D_NO_MODIF_ALPHA;
+  hdma2d.LayerCfg[1].InputAlpha = 0;
+  if (HAL_DMA2D_Init(&hdma2d) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_DMA2D_ConfigLayer(&hdma2d, 1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN DMA2D_Init 2 */
+
+  /* USER CODE END DMA2D_Init 2 */
+
+}
+
+/**
   * @brief LTDC Initialization Function
   * @param None
   * @retval None
@@ -278,7 +398,7 @@ static void MX_LTDC_Init(void)
   pLayerCfg.WindowX1 = 480;
   pLayerCfg.WindowY0 = 0;
   pLayerCfg.WindowY1 = 272;
-  pLayerCfg.PixelFormat = LTDC_PIXEL_FORMAT_ARGB8888;
+  pLayerCfg.PixelFormat = LTDC_PIXEL_FORMAT_RGB565;
   pLayerCfg.Alpha = 255;
   pLayerCfg.Alpha0 = 0;
   pLayerCfg.BlendingFactor1 = LTDC_BLENDING_FACTOR1_PAxCA;
@@ -326,35 +446,33 @@ static void MX_RNG_Init(void)
 }
 
 /**
-  * @brief USB_OTG_HS Initialization Function
+  * @brief TIM9 Initialization Function
   * @param None
   * @retval None
   */
-static void MX_USB_OTG_HS_HCD_Init(void)
+static void MX_TIM9_Init(void)
 {
+	TIM_ClockConfigTypeDef sClockSourceConfig;
 
-  /* USER CODE BEGIN USB_OTG_HS_Init 0 */
+	  htim9.Instance = TIM9;
+	  htim9.Init.Prescaler = 1000 - 1;
+	  htim9.Init.CounterMode = TIM_COUNTERMODE_UP;
+	  htim9.Init.Period = 84 - 1;
+	  htim9.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+	  if (HAL_TIM_Base_Init(&htim9) != HAL_OK)
+	  {
+	    Error_Handler();
+	  }
 
-  /* USER CODE END USB_OTG_HS_Init 0 */
+	  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+	  if (HAL_TIM_ConfigClockSource(&htim9, &sClockSourceConfig) != HAL_OK)
+	  {
+	    Error_Handler();
+	  }
 
-  /* USER CODE BEGIN USB_OTG_HS_Init 1 */
-
-  /* USER CODE END USB_OTG_HS_Init 1 */
-  hhcd_USB_OTG_HS.Instance = USB_OTG_HS;
-  hhcd_USB_OTG_HS.Init.Host_channels = 12;
-  hhcd_USB_OTG_HS.Init.speed = HCD_SPEED_FULL;
-  hhcd_USB_OTG_HS.Init.dma_enable = DISABLE;
-  hhcd_USB_OTG_HS.Init.phy_itface = USB_OTG_EMBEDDED_PHY;
-  hhcd_USB_OTG_HS.Init.Sof_enable = DISABLE;
-  hhcd_USB_OTG_HS.Init.low_power_enable = DISABLE;
-  hhcd_USB_OTG_HS.Init.use_external_vbus = DISABLE;
-  if (HAL_HCD_Init(&hhcd_USB_OTG_HS) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN USB_OTG_HS_Init 2 */
-
-  /* USER CODE END USB_OTG_HS_Init 2 */
+  /* USER CODE BEGIN TIM9_Init 2 */
+  HAL_TIM_Base_Start_IT(&htim9);
+  /* USER CODE END TIM9_Init 2 */
 
 }
 
@@ -376,16 +494,16 @@ static void MX_FMC_Init(void)
   */
   hsdram1.Instance = FMC_SDRAM_DEVICE;
   /* hsdram1.Init */
-  hsdram1.Init.SDBank = FMC_SDRAM_BANK1;
+  hsdram1.Init.SDBank = FMC_SDRAM_BANK2;
   hsdram1.Init.ColumnBitsNumber = FMC_SDRAM_COLUMN_BITS_NUM_8;
   hsdram1.Init.RowBitsNumber = FMC_SDRAM_ROW_BITS_NUM_12;
   hsdram1.Init.MemoryDataWidth = FMC_SDRAM_MEM_BUS_WIDTH_16;
-  hsdram1.Init.InternalBankNumber = FMC_SDRAM_INTERN_BANKS_NUM_2;
+  hsdram1.Init.InternalBankNumber = FMC_SDRAM_INTERN_BANKS_NUM_4;
   hsdram1.Init.CASLatency = FMC_SDRAM_CAS_LATENCY_2;
   hsdram1.Init.WriteProtection = FMC_SDRAM_WRITE_PROTECTION_DISABLE;
   hsdram1.Init.SDClockPeriod = FMC_SDRAM_CLOCK_PERIOD_2;
   hsdram1.Init.ReadBurst = FMC_SDRAM_RBURST_ENABLE;
-  hsdram1.Init.ReadPipeDelay = FMC_SDRAM_RPIPE_DELAY_0;
+  hsdram1.Init.ReadPipeDelay = FMC_SDRAM_RPIPE_DELAY_1;
   /* SdramTiming */
   SdramTiming.LoadToActiveDelay = 2;
   SdramTiming.ExitSelfRefreshDelay = 6;
@@ -472,6 +590,8 @@ static void MX_GPIO_Init(void)
 /* USER CODE END Header_StartDefaultTask */
 void StartDefaultTask(void const * argument)
 {
+  /* init code for USB_HOST */
+  MX_USB_HOST_Init();
   /* USER CODE BEGIN 5 */
 	/*for(int i = 0;i < 50;i++)
 	{
