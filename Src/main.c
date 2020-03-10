@@ -73,8 +73,11 @@ static void MX_USB_OTG_HS_HCD_Init(void);
 
 void StartDefaultTask(void const * argument);
 void MT48LC4M32B2_Init();
-void TFT_FillRectangle();
+void TFT_FillScreen_565();
+void TFT_FillScreen();
 void TFT_DrawPixel();
+void TFT_FillRectangle();
+void TFT_DrawLine();
 
 /* USER CODE END PFP */
 
@@ -486,9 +489,7 @@ void StartDefaultTask(void const * argument)
 	   osDelay(10);
 	  }*/
 
-	TFT_FillScreen(0);
-
-	for(int i = 0;i < 10000;i++)
+	/*for(int i = 0;i < 10000;i++)
 	  {
 			for(int j = 0;j < 100;j++)
 				{
@@ -499,11 +500,24 @@ void StartDefaultTask(void const * argument)
 			  HAL_RNG_GetRandomNumber(&hrng)%272,
 	          (uint16_t)HAL_RNG_GetRandomNumber(&hrng)|0xFF000000);
 			osDelay(10);
-	  }
+	  }*/
+
+	TFT_FillScreen(0);
+
+	for(int i=0;i<1000;i++)
+	    {
+	      TFT_DrawLine(HAL_RNG_GetRandomNumber(&hrng)%480,
+	              HAL_RNG_GetRandomNumber(&hrng)%272,
+	              HAL_RNG_GetRandomNumber(&hrng)%480,
+	              HAL_RNG_GetRandomNumber(&hrng)%272,
+	              HAL_RNG_GetRandomNumber(&hrng)|0xFF000000);
+	      osDelay(10);
+	    }
 
 	TFT_FillScreen(0);
 
 	vTaskDelete( NULL );
+
   /* USER CODE END 5 */ 
 }
 

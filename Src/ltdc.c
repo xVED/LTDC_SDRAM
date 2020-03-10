@@ -53,3 +53,37 @@ void TFT_FillRectangle(uint16_t x1, uint16_t y1, uint16_t x2, uint16_t y2, uint3
  }
 }
 //————————————————
+
+void TFT_DrawLine(uint16_t x1, uint16_t y1, uint16_t x2, uint16_t y2, uint32_t color)
+{
+	uint32_t buf;
+	int steep = abs(y2-y1)>abs(x2-x1);
+	if(steep)
+	{
+		buf = x1; x1 = y1; y1 = buf;
+		buf = x2; x2 = y2; y2 = buf;
+	}
+	if(x1>x2)
+	{
+		buf = x1; x1 = x2; x2 = buf;
+		buf = y1; y1 = y2; y2 = buf;
+	}
+	int dx,dy;
+	dx=x2-x1;
+	dy=abs(y2-y1);
+	int err=dx/2;
+	int ystep;
+	if(y1<y2) ystep=1;
+	else ystep=-1;
+	for(;x1<=x2;x1++)
+	{
+		if(steep) TFT_DrawPixel(y1,x1,color);
+		else TFT_DrawPixel(x1,y1,color);
+		err-=dy;
+		if(err<0)
+		{
+			y1 += ystep;
+			err=dx;
+		}
+	}
+}
