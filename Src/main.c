@@ -24,10 +24,12 @@
 #include "fatfs.h"
 #include "libjpeg.h"
 #include "ltdc.h"
-#include "MT48LC4M32B2.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+
+#include <stdlib.h>
+#include "MT48LC4M32B2.h"
 
 /* USER CODE END Includes */
 
@@ -71,6 +73,8 @@ static void MX_USB_OTG_HS_HCD_Init(void);
 
 void StartDefaultTask(void const * argument);
 void MT48LC4M32B2_Init();
+void TFT_FillRectangle();
+void TFT_DrawPixel();
 
 /* USER CODE END PFP */
 
@@ -125,7 +129,7 @@ int main(void)
   /* USER CODE BEGIN 2 */
 
   MT48LC4M32B2_Init(&hsdram1);
-  HAL_LTDC_SetAddress(&hltdc,LCD_FRAME_BUFFER,0);
+  HAL_LTDC_SetAddress(&hltdc, LCD_FRAME_BUFFER,0);
 
   /* USER CODE END 2 */
 
@@ -466,11 +470,39 @@ static void MX_GPIO_Init(void)
 void StartDefaultTask(void const * argument)
 {
   /* USER CODE BEGIN 5 */
-	TFT_FillScreen(0xFF00FF00);
-	osDelay(5000);
-	TFT_FillScreen(0x0);
-	osDelay(5000);
-	TFT_FillScreen(0xFF00FF00);
+	/*for(int i = 0;i < 50;i++)
+	{
+	   TFT_FillScreen(HAL_RNG_GetRandomNumber(&hrng)|0xFF000000);
+	   osDelay(300);
+	}*/
+
+	 /*for(int i=0;i<1000;i++)
+	  {
+	   TFT_FillRectangle(HAL_RNG_GetRandomNumber(&hrng)%480,
+	            HAL_RNG_GetRandomNumber(&hrng)%272,
+	            HAL_RNG_GetRandomNumber(&hrng)%480,
+	            HAL_RNG_GetRandomNumber(&hrng)%272,
+	            HAL_RNG_GetRandomNumber(&hrng)|0xFF000000);
+	   osDelay(10);
+	  }*/
+
+	TFT_FillScreen(0);
+
+	for(int i = 0;i < 10000;i++)
+	  {
+			for(int j = 0;j < 100;j++)
+				{
+					TFT_DrawPixel(HAL_RNG_GetRandomNumber(&hrng)%480,
+					  HAL_RNG_GetRandomNumber(&hrng)%272,0);
+				}
+			TFT_DrawPixel(HAL_RNG_GetRandomNumber(&hrng)%480,
+			  HAL_RNG_GetRandomNumber(&hrng)%272,
+	          (uint16_t)HAL_RNG_GetRandomNumber(&hrng)|0xFF000000);
+			osDelay(10);
+	  }
+
+	TFT_FillScreen(0);
+
 	vTaskDelete( NULL );
   /* USER CODE END 5 */ 
 }
